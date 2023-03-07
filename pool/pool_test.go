@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	// "github.com/fortytw2/leaktest"
 )
 
 type test struct {
@@ -30,7 +31,7 @@ var ts = []test{
 	},
 	{
 		name: "sqrTimeout",
-		fn:   sqrTimeout,
+		fn:   SqrTimeout,
 		err:  context.DeadlineExceeded,
 	},
 }
@@ -43,9 +44,10 @@ func TestPool(t *testing.T) {
 
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// defer leaktest.Check(t)()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 			defer cancel()
-			p := NewJobPool(ctx, jobs, 2, tc.fn)
+			p := NewJobPool(ctx, jobs, 3, tc.fn)
 			err := p.Process()
 			if err != nil {
 				if tc.err == nil {
@@ -71,7 +73,6 @@ func TestPool(t *testing.T) {
 }
 
 func sqr(ctx context.Context, i any) (any, error) {
-	// time.Sleep(1 * time.Second)
 	d, ok := i.(int)
 	if !ok {
 		return nil, fmt.Errorf("invalid value: %v, %w", i, ErrInvalidValue)
@@ -80,23 +81,23 @@ func sqr(ctx context.Context, i any) (any, error) {
 }
 
 func sqrErr(ctx context.Context, i any) (any, error) {
+	time.Sleep(100 * time.Millisecond)
 	d, ok := i.(int)
 	if !ok {
 		return nil, fmt.Errorf("invalid value: %v, %w", i, ErrInvalidValue)
 	}
-	if d > 0 && d%3 == 0 {
+	if d%3 == 0 {
 		return nil, fmt.Errorf("invalid value :%d, %w", i, ErrInvalidValue)
 	}
 	return any(d * d), nil
 }
 
-func sqrTimeout(ctx context.Context, i any) (any, error) {
+func SqrTimeout(ctx context.Context, i any) (any, error) {
 	d, ok := i.(int)
 	if !ok {
 		return nil, fmt.Errorf("invalid value: %v, %w", i, ErrInvalidValue)
 	}
-	if d > 0 && d%3 == 0 {
-		time.Sleep(6 * time.Second)
-	}
+	time.Sleep(6 * time.Second)
+
 	return any(d * d), nil
 }

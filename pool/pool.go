@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"sync"
 )
 
 type JobPool struct {
@@ -10,11 +11,18 @@ type JobPool struct {
 	resps    []any
 	fn       ProcessFn
 	nworkers int
+	jch      chan job
 	rch      chan result
-	done     chan struct{}
+	quit     chan struct{}
+	wg       sync.WaitGroup
 }
 
 type result struct {
+	idx int
+	val any
+}
+
+type job struct {
 	idx int
 	val any
 }
@@ -28,60 +36,86 @@ func NewJobPool(ctx context.Context, reqs []any, nworkers int, fn ProcessFn) *Jo
 		resps:    make([]any, len(reqs)),
 		nworkers: nworkers,
 		fn:       fn,
+		jch:      make(chan job, nworkers),
 		rch:      make(chan result, nworkers),
-		done:     make(chan struct{}),
+		quit:     make(chan struct{}),
 	}
 }
 
-func (p *JobPool) Process() error {
+func (p *JobPool) Process() (err error) {
 	// run workers
+	p.wg.Add(p.nworkers + 1)
 	for w := 0; w < p.nworkers; w++ {
 		go p.work(w)
 	}
 
-	// sync worker close
-	defer close(p.done)
-
-	// process result
-	var count int
-	for {
-		select {
-		case r := <-p.rch:
-			count++
-			if err, ok := r.val.(error); ok {
-				return err
-			}
-			p.resps[r.idx] = r.val
-			if count == len(p.reqs) {
-				return nil
+	go func() {
+		defer p.wg.Done()
+		// send jobs
+	sendloop:
+		for idx, req := range p.reqs {
+			select {
+			case <-p.quit:
+				break sendloop
+			case <-p.ctx.Done():
+				break sendloop
+			default:
+				p.jch <- job{
+					idx: idx,
+					val: req,
+				}
 			}
 		}
+		close(p.jch)
+	}()
+
+	// process results
+ploop:
+	for c := 0; c < len(p.reqs); {
+		select {
+		case r := <-p.rch:
+			c++
+			var ok bool
+			if err, ok = r.val.(error); ok {
+				break ploop
+			}
+			p.resps[r.idx] = r.val
+		}
 	}
+	// sync workers
+	close(p.quit)
+
+	// wait workers
+	p.wg.Wait()
+
+	return err
 }
 
 func (p *JobPool) work(j int) {
-	for i := j; i < len(p.reqs); i += p.nworkers {
+	defer p.wg.Done()
+
+	for job := range p.jch {
 		select {
-		case <-p.done:
+		case <-p.quit:
 			return
 		case <-p.ctx.Done():
 			p.rch <- result{
-				idx: i,
+				idx: job.idx,
 				val: p.ctx.Err(),
 			}
 			return
 
 		default:
-			rs, err := p.fn(p.ctx, p.reqs[i])
+			rs, err := p.fn(p.ctx, job.val)
 			if err != nil {
 				p.rch <- result{
-					idx: i,
+					idx: job.idx,
 					val: err,
 				}
 				return
 			}
 			p.rch <- result{
-				idx: i,
+				idx: job.idx,
 				val: rs,
 			}
 		}
